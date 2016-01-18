@@ -9,7 +9,6 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
@@ -21,8 +20,9 @@ import java.util.Set;
 
 public class ClassDependencies {
 
-  public static final String DEPENDENT_PREFIX = "  <file path=\"$PROJECT_DIR$/ui/editor-sdk/editor-components/src/main/joo/";
-  public static final String DEPENDENCY_PREFIX = "    <dependency path=\"$PROJECT_DIR$/ui/editor-sdk/editor-components/src/main/joo/";
+  public static final String DEPENDENT_PREFIX = "  <file path=\"$PROJECT_DIR$/";
+  public static final String DEPENDENCY_PREFIX = "    <dependency path=\"$PROJECT_DIR$/";
+  public static final String SOURCE_INFIX = "/src/main/joo/";
 
   public static void main(String[] args) throws IOException {
     if (args.length != 2) {
@@ -96,10 +96,10 @@ public class ClassDependencies {
     for (int i = 0; i < lines.size(); i++) {
       String line = lines.get(i);
       if (line.startsWith(DEPENDENT_PREFIX)) {
-        dependent = extractName(line, DEPENDENT_PREFIX);
+        dependent = extractName(line);
       }
       if (line.startsWith(DEPENDENCY_PREFIX)) {
-        String dependency = extractName(line, DEPENDENCY_PREFIX);
+        String dependency = extractName(line);
         if (dependent != null && dependency != null && !dependent.equals(dependency)) {
           requires.put(dependent, dependency);
         }
@@ -107,26 +107,30 @@ public class ClassDependencies {
     }
   }
 
-  private static String extractName(String line, String prefix) {
-    int endIndex = line.lastIndexOf('.');
-    if (endIndex > prefix.length()) {
-      String path = line.substring(prefix.length(), endIndex);
-      String className = path.replace('/', '.');
-      int dotPos = className.lastIndexOf('.');
-      if (dotPos != -1) {
-        String packageName = className.substring(0, dotPos);
-        String[] parts = packageName.split("[.]");
-        StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < parts.length - 1 && i < 4; i++) {
-          parts[i] = parts[i].substring(0, 1);
-        }
-        for (int i = 0; i < parts.length; i++) {
-          if (i > 0) {
-            builder.append('.');
+  private static String extractName(String line) {
+    int startIndex = line.indexOf(SOURCE_INFIX);
+    if (startIndex != -1) {
+      startIndex = startIndex + SOURCE_INFIX.length();
+      int endIndex = line.lastIndexOf('.');
+      if (endIndex > startIndex) {
+        String path = line.substring(startIndex, endIndex);
+        String className = path.replace('/', '.');
+        int dotPos = className.lastIndexOf('.');
+        if (dotPos != -1) {
+          String packageName = className.substring(0, dotPos);
+          String[] parts = packageName.split("[.]");
+          StringBuilder builder = new StringBuilder();
+          for (int i = 0; i < parts.length - 1 && i < 4; i++) {
+            parts[i] = parts[i].substring(0, 1);
           }
-          builder.append(parts[i]);
+          for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+              builder.append('.');
+            }
+            builder.append(parts[i]);
+          }
+          return builder.toString();
         }
-        return builder.toString();
       }
     }
     return null;
@@ -141,11 +145,9 @@ public class ClassDependencies {
     nodes.addAll(requires.keySet());
     nodes.addAll(requires.values());
     for (String nodeId : nodes) {
-      int colorHash = Math.abs(nodeToSCC.get(nodeId).hashCode() % 300);
+      int colorHash = Math.abs(nodeToSCC.get(nodeId).hashCode() % 600);
 
-      String color = Integer.toHexString(Math.max(0, Math.min(Math.abs(colorHash - 150), 100)) + 155) +
-              Integer.toHexString(Math.max(0, Math.min(Math.abs((colorHash + 100) % 300 - 150), 100)) + 155) +
-              Integer.toHexString(Math.max(0, Math.min(Math.abs((colorHash + 200) % 300 - 150), 100)) + 155);
+      String color = makeColor(colorHash);
 
       writer.println("    <node id=\"" + nodeId + "\">");
       writer.println("      <data key=\"d6\">");
@@ -161,5 +163,11 @@ public class ClassDependencies {
       writer.println("    <edge source=\"" + entry.getKey() + "\" target=\"" + entry.getValue() + "\"/>");
     }
     writer.println("</graphml>");
+  }
+
+  private static String makeColor(int colorHash) {
+    return Integer.toHexString(Math.max(0, Math.min(Math.abs(colorHash % 600 - 300) - 100, 100)) + 155) +
+            Integer.toHexString(Math.max(0, Math.min(Math.abs((colorHash + 200) % 600 - 300) - 100, 100)) + 155) +
+            Integer.toHexString(Math.max(0, Math.min(Math.abs((colorHash + 400) % 600 - 300) - 100, 100)) + 155);
   }
 }
