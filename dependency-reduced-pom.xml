@@ -25,7 +25,7 @@
             <configuration>
               <transformers>
                 <transformer>
-                  <mainClass>net.jangaroo.dependencies.ClassDependencies</mainClass>
+                  <mainClass>net.jangaroo.dependencies.DepsToGraph</mainClass>
                 </transformer>
               </transformers>
             </configuration>
