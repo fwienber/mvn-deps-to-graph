@@ -1,97 +1,265 @@
 package net.jangaroo.dependencies;
 
-import com.google.common.base.Charsets;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import com.google.common.io.Files;
 
+import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 public class DepsToGraph {
+
+  private Multimap<String, String> deps;
+  private Multimap<String, String> inverseDeps;
+  private Map<String, Pattern> componentPatterns;
+  private Set<String> modules;
+  private Set<String> components;
+
+  /** @noinspection UseOfSystemOutOrSystemErr*/
   public static void main(String[] args) throws IOException {
     if (args.length != 3) {
-      System.out.println("Usage: java -jar ... <DEPSFILE> <CHANGESFILE> <OUTFILE>");
+      System.out.println("Usage: java -jar ... <DEPSFILE> <COMPFILE> <OUTFILE>");
+      System.out.println();
+      System.out.println("DEPSFILE: the output from 'mvn dependency:tree'");
+      System.out.println("COMPFILE: a property file mapping module names to component names");
+      System.out.println("OUTFILE: the target *.graphml file");
     } else {
-      Multimap<String, String> deps = HashMultimap.create();
-      analyzeDepsFile(new File(args[0]), deps);
-      Map<String,Long> changes = new HashMap<>();
-      analyzeChangesFile(new File(args[1]), changes);
+      new DepsToGraph().execute(args[0], args[1], args[2]);
+    }
+  }
 
-      Multimap<String, String> coreDeps = excludingTransitive(deps);
+  private void execute(String depsFileName, String compFileName, String outFileName) throws IOException {
+    analyzeDepsFile(new File(depsFileName));
+    analyzeComponentFile(new File(compFileName));
+    collapseComponents();
+    removeTransitiveDependencies();
 
-      File outFile = new File(args[2]);
-      try (PrintWriter writer = new PrintWriter(new FileWriter(outFile))) {
-        writeGraph(writer, deps, changes);
+    File outFile = new File(outFileName);
+    try (PrintWriter writer = new PrintWriter(new OutputStreamWriter(new FileOutputStream(outFile), "UTF-8"))) {
+      writeGraph(writer, deps);
+    }
+  }
+
+  private String column(String line, int col) {
+    String[] strings = line.split(" ");
+    return strings[col];
+  }
+
+  private String moduleColumn(String line, int col) {
+    return toModuleId(column(line, col));
+  }
+
+  private String toModuleId(String id) {
+    String[] strings = id.split(":");
+    return strings[0] + ":" + strings[1];
+  }
+
+  private boolean isRelevant(String moduleId) {
+    return moduleId.startsWith("com.coremedia.");
+  }
+
+  private void analyzeDepsFile(File file) throws IOException {
+    deps = HashMultimap.create();
+    inverseDeps = HashMultimap.create();
+
+    String module = null;
+    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
+      while (reader.ready()) {
+        String line = reader.readLine();
+        if (isHeaderLine(line)) {
+          module = moduleColumn(reader.readLine(), 1);
+          continue;
+        }
+
+        if (module != null && isDependencyLine(line)) {
+          String dependency = moduleColumn(line, 2);
+          if (isRelevant(dependency)) {
+            deps.put(module, dependency);
+            inverseDeps.put(dependency, module);
+          }
+          continue;
+        }
+
+        if (!isNestedDependencyLine(line)) {
+          module = null;
+        }
+      }
+    }
+
+    modules = new HashSet<>();
+    modules.addAll(deps.keySet());
+    modules.addAll(deps.values());
+  }
+
+  private boolean isNestedDependencyLine(String line) {
+    return line.startsWith("[INFO] | ");
+  }
+
+  private boolean isHeaderLine(String line) {
+    return line.startsWith("[INFO] --- maven-dependency-plugin:");
+  }
+
+  private boolean isDependencyLine(String line) {
+    return line.startsWith("[INFO] +- ") || line.startsWith("[INFO] \\- ");
+  }
+
+  private void analyzeComponentFile(File file) throws IOException {
+    componentPatterns = new LinkedHashMap<>();
+
+    Properties properties = new Properties();
+    try (InputStream stream = new FileInputStream(file)) {
+      properties.load(stream);
+    }
+    for (Map.Entry<Object, Object> entry : properties.entrySet()) {
+      componentPatterns.put((String)entry.getKey(), Pattern.compile(((String)entry.getValue()).trim()));
+    }
+
+    components = new HashSet<>(componentPatterns.keySet());
+  }
+
+  private String getComponent(String module) {
+    for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
+      if (entry.getValue().matcher(module).matches()) {
+        return entry.getKey();
+      }
+    }
+    int index = module.indexOf(':');
+    if (index != -1) {
+      String pureName = module.substring(index + 1);
+      for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
+        if (entry.getValue().matcher(pureName).matches()) {
+          return entry.getKey();
+        }
+      }
+    }
+    return null;
+  }
+
+  private void collapseComponents() {
+    for (String module : new ArrayList<>(modules)) {
+      // Guard against concurrent modifications.
+      if (modules.contains(module)) {
+        String component = getComponent(module);
+        if (component != null) {
+          Set<String> collapsibleNodes = new HashSet<>();
+          List<String> path = new ArrayList<>();
+          findCollapsibleComponents(module, component, collapsibleNodes, new HashSet<String>(), path);
+
+          merge(collapsibleNodes, component);
+        }
       }
     }
   }
 
-  private static Multimap<String, String> excludingTransitive(Multimap<String, String> deps) {
-    Multimap<String, String> result = HashMultimap.create();
+  private void findCollapsibleComponents(String current, String component, Set<String> collapsibleNodes, HashSet<String> visited, List<String> path) {
+    if (visited.add(current)) {
+      path.add(current);
+
+      String currentComponent = getComponent(current);
+      if (component.equals(currentComponent) || component.equals(current)) {
+        collapsibleNodes.addAll(path);
+      }
+
+      for (String node : new ArrayList<>(deps.get(current))) {
+        findCollapsibleComponents(node, component, collapsibleNodes, visited, path);
+      }
+
+      if (collapsibleNodes.contains(current)) {
+        if (currentComponent != null && !currentComponent.equals(component)) {
+          System.out.println(String.format("Node %s is assigned to component %s, which is part of the chain %s of component %s.",
+                  current,
+                  currentComponent,
+                  path,
+                  component));
+        } else if (components.contains(current) && !current.equals(component)) {
+          System.out.println(String.format("Component %s part of the chain %s of component %s.",
+                  current,
+                  path,
+                  component));
+        }
+      }
+
+      path.remove(path.size() - 1);
+    }
+  }
+
+  private void merge(Set<String> oldNodes, String component) {
+    Set<String> allSuccessors = new HashSet<>();
+    Set<String> allPredecessors = new HashSet<>();
+
+    for (String oldNode : oldNodes) {
+      Collection<String> successors = deps.removeAll(oldNode);
+      allSuccessors.addAll(successors);
+      for (String successor : successors) {
+        inverseDeps.remove(successor, oldNode);
+      }
+
+      Collection<String> predecessors = inverseDeps.removeAll(oldNode);
+      allPredecessors.addAll(predecessors);
+      for (String predecessor : predecessors) {
+        deps.remove(predecessor, oldNode);
+      }
+    }
+
+    allSuccessors.remove(component);
+    allSuccessors.removeAll(oldNodes);
+    allPredecessors.remove(component);
+    allPredecessors.removeAll(oldNodes);
+
+    for (String successor : allSuccessors) {
+      deps.put(component, successor);
+      inverseDeps.put(successor, component);
+    }
+    for (String predecessor : allPredecessors) {
+      deps.put(predecessor, component);
+      inverseDeps.put(component, predecessor);
+    }
+
+    modules.removeAll(oldNodes);
+    modules.add(component);
+  }
+
+  private void removeTransitiveDependencies() {
     for (String node : new ArrayList<>(deps.keySet())) {
-      traverse(node, node, 0, deps, new HashSet<String>());
-    }
-
-    return result;
-  }
-
-  private static void traverse(String current, String root, int depth, Multimap<String, String> deps, Set<String> visited) {
-    if (!visited.add(current)) {
-      return;
-    }
-    if (depth > 1) {
-      deps.remove(root, current);
-    }
-    for (String node : new ArrayList<>(deps.get(current))) {
-      traverse(node, root, depth + 1, deps, visited);
+      removeTransitiveDependencies(node, node, 0, new HashSet<String>());
     }
   }
 
-  private static void analyzeDepsFile(File file, Multimap<String, String> deps) throws IOException {
-    List<String> lines = Files.readLines(file, Charsets.UTF_8);
-
-    for (int i = 0; i < lines.size(); i++) {
-      String line = lines.get(i);
-      String[] strings = line.split(" ");
-      if (strings.length == 2) {
-        deps.put(strings[0], strings[1]);
+  private void removeTransitiveDependencies(String current, String root, int depth, Set<String> visited) {
+    if (visited.add(current)) {
+      if (depth > 1) {
+        deps.remove(root, current);
+        inverseDeps.remove(current, root);
+      }
+      for (String node : new ArrayList<>(deps.get(current))) {
+        removeTransitiveDependencies(node, root, depth + 1, visited);
       }
     }
   }
 
-  private static void analyzeChangesFile(File file, Map<String, Long> changes) throws IOException {
-    List<String> lines = Files.readLines(file, Charsets.UTF_8);
-
-    for (int i = 0; i < lines.size(); i++) {
-      String line = lines.get(i);
-      String[] strings = line.split(" ");
-      if (strings.length == 2) {
-        changes.put(strings[0], Long.parseLong(strings[1]));
-      }
-    }
-  }
-
-  private static void writeGraph(PrintWriter writer, Multimap<String, String> deps, Map<String, Long> changes) {
+  private void writeGraph(PrintWriter writer, Multimap<String, String> deps) {
     writer.println("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     writer.println("<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\" xmlns:java=\"http://www.yworks.com/xml/yfiles-common/1.0/java\" xmlns:sys=\"http://www.yworks.com/xml/yfiles-common/markup/primitives/2.0\" xmlns:x=\"http://www.yworks.com/xml/yfiles-common/markup/2.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:y=\"http://www.yworks.com/xml/graphml\" xmlns:yed=\"http://www.yworks.com/xml/yed/3\" xsi:schemaLocation=\"http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd\">");
     writer.println("<key for=\"node\" id=\"d6\" yfiles.type=\"nodegraphics\"/>");
 
-    Set<String> nodes = new HashSet<>();
-    nodes.addAll(deps.keySet());
-    nodes.addAll(deps.values());
-    for (String nodeId : nodes) {
-      Long count = changes.get(nodeId);
-      String color = makeColor(count == null || count == 0 ? 0 : Math.min(510, (int)(Math.log(count) * 50 + 1)));
-      String label = nodeId.substring(nodeId.lastIndexOf('/') + 1);
+    for (String nodeId : modules) {
+      String label = makeLabel(nodeId);
+      String color = components.contains(nodeId) ? "88ff88" : "ffffff";
 
       writer.println("    <node id=\"" + nodeId + "\">");
       writer.println("      <data key=\"d6\">");
@@ -109,13 +277,8 @@ public class DepsToGraph {
     writer.println("</graphml>");
   }
 
-  private static String makeColor(int color) {
-    return toTwoByteHex(255) +
-            toTwoByteHex(Math.max(0, Math.min(510 - color, 255))) +
-            toTwoByteHex(Math.max(0, Math.min(255 - color, 255)));
-  }
-
-  private static String toTwoByteHex(int i) {
-    return (i < 16 ? "0" : "") + Integer.toHexString(i);
+  private String makeLabel(String id) {
+    // Last name component. If no separator is found, return the entire id.
+    return id.substring(id.lastIndexOf(':') + 1);
   }
 }
