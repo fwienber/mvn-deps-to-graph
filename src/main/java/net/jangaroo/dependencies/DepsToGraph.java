@@ -36,7 +36,6 @@ public class DepsToGraph {
   private Multimap<String, String> componentsToAllModules;
   private Set<String> components;
 
-  /** @noinspection UseOfSystemOutOrSystemErr*/
   public static void main(String[] args) throws IOException {
     if (args.length != 3) {
       System.out.println("Usage: java -jar ... <DEPSFILE> <COMPFILE> <OUTFILE>");
@@ -339,56 +338,67 @@ public class DepsToGraph {
     writer.println("<key for=\"node\" id=\"d6\" yfiles.type=\"nodegraphics\"/>");
 
     for (String nodeId : modules) {
-      StringBuilder builder = new StringBuilder();
-      String nodeLabel = toLabel(nodeId);
-      int maxPos = nodeLabel.length();
-      int lines = 1;
-      builder.append(nodeLabel);
-      List<String> parts = new ArrayList<>();
-      for (String partId : componentsToAllModules.get(nodeId)) {
-        parts.add(toLabel(partId));
-      }
-      Collections.sort(parts);
-      if (!parts.isEmpty()) {
-        builder.append("\n\n");
-        lines = lines + 2;
-        int pos = 0;
-        boolean first = true;
-        for (String part : parts) {
-          if (first) {
-            first = false;
-          } else {
-            builder.append(",");
-            pos = pos + 1;
-            if (pos > 50) {
-              builder.append("\n");
-              lines++;
-              pos = 0;
-            } else {
-              builder.append(" ");
-              pos = pos + 1;
-            }
-          }
-          builder.append(part);
-          pos = pos + part.length();
-          maxPos = Math.max(maxPos, pos);
-        }
-      }
-      String color = components.contains(nodeId) ? "88ff88" : "ffffff";
+      writeNode(writer, nodeId);
+    }
 
-      writer.println("    <node id=\"" + nodeId + "\">");
-      writer.println("      <data key=\"d6\">");
-      writer.println("        <y:ShapeNode>");
-      writer.println("        <y:Fill color=\"#" + color + "\" transparent=\"false\"/>");
-      writer.println("          <y:Geometry height=\"" + (10 + 14 * lines) + "\" width=\"" + (30 + 6 * maxPos) + "\"/>\n");
-      writer.println("          <y:NodeLabel>" + builder + "</y:NodeLabel>");
-      writer.println("        </y:ShapeNode>");
-      writer.println("      </data>");
-      writer.println("    </node>");
-    }
     for (Map.Entry<String, String> entry : deps.entries()) {
-      writer.println("    <edge source=\"" + entry.getKey() + "\" target=\"" + entry.getValue() + "\"/>");
+      writeEdge(writer, entry.getKey(), entry.getValue());
     }
+
     writer.println("</graphml>");
   }
+
+  private void writeEdge(PrintWriter writer, String source, String target) {
+    writer.println("    <edge source=\"" + source + "\" target=\"" + target + "\"/>");
+  }
+
+  private void writeNode(PrintWriter writer, String nodeId) {
+    StringBuilder builder = new StringBuilder();
+    String nodeLabel = toLabel(nodeId);
+    int maxPos = nodeLabel.length();
+    int lines = 1;
+    builder.append(nodeLabel);
+    List<String> parts = new ArrayList<>();
+    for (String partId : componentsToAllModules.get(nodeId)) {
+      parts.add(toLabel(partId));
+    }
+    Collections.sort(parts);
+    if (!parts.isEmpty()) {
+      builder.append("\n\n");
+      lines = lines + 2;
+      int pos = 0;
+      boolean first = true;
+      for (String part : parts) {
+        if (first) {
+          first = false;
+        } else {
+          builder.append(",");
+          pos = pos + 1;
+          if (pos > 50) {
+            builder.append("\n");
+            lines++;
+            pos = 0;
+          } else {
+            builder.append(" ");
+            pos = pos + 1;
+          }
+        }
+        builder.append(part);
+        pos = pos + part.length();
+        maxPos = Math.max(maxPos, pos);
+      }
+    }
+    String color = components.contains(nodeId) ? "88ff88" : "ffffff";
+
+    writer.println("    <node id=\"" + nodeId + "\">");
+    writer.println("      <data key=\"d6\">");
+    writer.println("        <y:ShapeNode>");
+    writer.println("        <y:Fill color=\"#" + color + "\" transparent=\"false\"/>");
+    writer.println("          <y:Geometry height=\"" + (10 + 14 * lines) + "\" width=\"" + (30 + 6 * maxPos) + "\"/>\n");
+    writer.println("          <y:NodeLabel>" + builder + "</y:NodeLabel>");
+    writer.println("        </y:ShapeNode>");
+    writer.println("      </data>");
+    writer.println("    </node>");
+  }
+
 }
