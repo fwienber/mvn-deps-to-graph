@@ -14,6 +14,8 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,6 +30,10 @@ public class DepsToGraph {
   private Multimap<String, String> inverseDeps;
   private Map<String, Pattern> componentPatterns;
   private Set<String> modules;
+  private Map<String,String> modulesToComponents;
+  private Multimap<String, String> reachableComponents;
+  private Multimap<String, String> dependingComponents;
+  private Multimap<String, String> componentsToAllModules;
   private Set<String> components;
 
   /** @noinspection UseOfSystemOutOrSystemErr*/
@@ -46,6 +52,9 @@ public class DepsToGraph {
   private void execute(String depsFileName, String compFileName, String outFileName) throws IOException {
     analyzeDepsFile(new File(depsFileName));
     analyzeComponentFile(new File(compFileName));
+    computeModulesToComponents();
+    computeReachableComponents();
+    computeDependingComponents();
     collapseComponents();
     removeTransitiveDependencies();
 
@@ -163,63 +172,114 @@ public class DepsToGraph {
     return null;
   }
 
-  private void collapseComponents() {
-    for (String module : new ArrayList<>(modules)) {
-      // Guard against concurrent modifications.
-      if (modules.contains(module)) {
-        String component = getComponent(module);
-        if (component != null) {
-          collapseNode(module, component);
-        }
+  private void computeModulesToComponents() {
+    modulesToComponents = new HashMap<>();
+
+    for (String module : modules) {
+      String component = getComponent(module);
+      if (component != null) {
+        modulesToComponents.put(module, component);
       }
     }
+  }
 
-    for (String component : components) {
-      collapseNode(component, component);
+  private void computeReachableComponents() {
+    reachableComponents = HashMultimap.create();
+
+    HashSet<String> visited = new HashSet<>();
+    for (String module : modules) {
+      computeReachableComponents(module, visited);
     }
   }
 
-  private void collapseNode(String module, String component) {
-    Set<String> collapsibleNodes = new HashSet<>();
-    List<String> path = new ArrayList<>();
-    findCollapsibleComponents(module, component, collapsibleNodes, new HashSet<String>(), path);
-
-    merge(collapsibleNodes, component);
-  }
-
-  private void findCollapsibleComponents(String current, String component, Set<String> collapsibleNodes, HashSet<String> visited, List<String> path) {
-    path.add(current);
-
-    String currentComponent = getComponent(current);
-    if (component.equals(currentComponent) || component.equals(current)) {
-      collapsibleNodes.addAll(path);
-    }
-
+  private void computeReachableComponents(String current, HashSet<String> visited) {
     if (visited.add(current)) {
-      for (String node : new ArrayList<>(deps.get(current))) {
-        findCollapsibleComponents(node, component, collapsibleNodes, visited, path);
+      Set<String> joinedReachableComponents = new HashSet<>();
+      if (modulesToComponents.containsKey(current)) {
+        joinedReachableComponents.add(modulesToComponents.get(current));
       }
 
-      if (collapsibleNodes.contains(current)) {
-        if (currentComponent != null && !currentComponent.equals(component)) {
-          System.out.println(String.format("Node %s is assigned to component %s, which is part of the chain %s of component %s.",
-                  current,
-                  currentComponent,
-                  path,
-                  component));
-        } else if (components.contains(current) && !current.equals(component)) {
-          System.out.println(String.format("Component %s part of the chain %s of component %s.",
-                  current,
-                  path,
-                  component));
+      for (String node : new ArrayList<>(deps.get(current))) {
+        computeReachableComponents(node, visited);
+        joinedReachableComponents.addAll(reachableComponents.get(node));
+      }
+      reachableComponents.putAll(current, joinedReachableComponents);
+    }
+  }
+
+  private void computeDependingComponents() {
+    dependingComponents = HashMultimap.create();
+
+    HashSet<String> visited = new HashSet<>();
+    for (String module : modules) {
+      computeDependingComponents(module, visited);
+    }
+  }
+
+  private void computeDependingComponents(String current, HashSet<String> visited) {
+    if (visited.add(current)) {
+      Collection<String> joinedDependingComponents = new HashSet<>();
+      if (modulesToComponents.containsKey(current)) {
+        joinedDependingComponents.add(modulesToComponents.get(current));
+      }
+
+      for (String node : new ArrayList<>(inverseDeps.get(current))) {
+        computeDependingComponents(node, visited);
+        joinedDependingComponents.addAll(dependingComponents.get(node));
+      }
+      dependingComponents.putAll(current, joinedDependingComponents);
+    }
+  }
+
+  private void collapseComponents() {
+    componentsToAllModules = HashMultimap.create();
+    for (String module : modules) {
+      Set<String> moduleComponents = new HashSet<>(reachableComponents.get(module));
+      moduleComponents.retainAll(dependingComponents.get(module));
+
+      if (moduleComponents.size() > 1) {
+        System.out.println(String.format("Module %s is supposed to be member of multiple components: %s", module, moduleComponents));
+        for (String component : moduleComponents) {
+          System.out.println(String.format("  Path to component %s is: %s", component, findPath(module, component, deps)));
+          System.out.println(String.format("  Path from component %s is: %s", component, findPath(module, component, inverseDeps)));
         }
+      } else if (moduleComponents.size() == 1) {
+        componentsToAllModules.put(moduleComponents.iterator().next(), module);
       }
     }
 
-    path.remove(path.size() - 1);
+    for (String component : componentsToAllModules.keys()) {
+      merge(componentsToAllModules.get(component), component);
+    }
   }
 
-  private void merge(Set<String> oldNodes, String component) {
+  private List<String> findPath(String module, String component, Multimap<String, String> deps) {
+    Set<String> visited = new HashSet<>();
+    List<String> path = new ArrayList<>();
+    findPath(module, component, deps, visited, path);
+    return path;
+  }
+
+  private boolean findPath(String current, String component, Multimap<String, String> deps, Set<String> visited, List<String> path) {
+    if (visited.add(current)) {
+      path.add(current);
+      if (component.equals(modulesToComponents.get(current))) {
+        return true;
+      }
+
+      for (String node : deps.get(current)) {
+        if (findPath(node, component, deps, visited, path)) {
+          return true;
+        }
+      }
+
+      path.remove(path.size() - 1);
+    }
+
+    return false;
+  }
+
+  private void merge(Collection<String> oldNodes, String component) {
     Set<String> allSuccessors = new HashSet<>();
     Set<String> allPredecessors = new HashSet<>();
 
@@ -279,15 +339,49 @@ public class DepsToGraph {
     writer.println("<key for=\"node\" id=\"d6\" yfiles.type=\"nodegraphics\"/>");
 
     for (String nodeId : modules) {
-      String label = toLabel(nodeId);
+      StringBuilder builder = new StringBuilder();
+      String nodeLabel = toLabel(nodeId);
+      int maxPos = nodeLabel.length();
+      int lines = 1;
+      builder.append(nodeLabel);
+      List<String> parts = new ArrayList<>();
+      for (String partId : componentsToAllModules.get(nodeId)) {
+        parts.add(toLabel(partId));
+      }
+      Collections.sort(parts);
+      if (!parts.isEmpty()) {
+        builder.append("\n\n");
+        lines = lines + 2;
+        int pos = 0;
+        boolean first = true;
+        for (String part : parts) {
+          if (first) {
+            first = false;
+          } else {
+            builder.append(",");
+            pos = pos + 1;
+            if (pos > 50) {
+              builder.append("\n");
+              lines++;
+              pos = 0;
+            } else {
+              builder.append(" ");
+              pos = pos + 1;
+            }
+          }
+          builder.append(part);
+          pos = pos + part.length();
+          maxPos = Math.max(maxPos, pos);
+        }
+      }
       String color = components.contains(nodeId) ? "88ff88" : "ffffff";
 
       writer.println("    <node id=\"" + nodeId + "\">");
       writer.println("      <data key=\"d6\">");
       writer.println("        <y:ShapeNode>");
       writer.println("        <y:Fill color=\"#" + color + "\" transparent=\"false\"/>");
-      writer.println("          <y:Geometry height=\"20.0\" width=\"" + 8 * label.length() + "\"/>\n");
-      writer.println("          <y:NodeLabel>" + label + "</y:NodeLabel>");
+      writer.println("          <y:Geometry height=\"" + (10 + 14 * lines) + "\" width=\"" + (30 + 6 * maxPos) + "\"/>\n");
+      writer.println("          <y:NodeLabel>" + builder + "</y:NodeLabel>");
       writer.println("        </y:ShapeNode>");
       writer.println("      </data>");
       writer.println("    </node>");
