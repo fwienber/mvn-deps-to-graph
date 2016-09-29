@@ -64,9 +64,17 @@ public class DepsToGraph {
     return toModuleId(column(line, col));
   }
 
-  private String toModuleId(String id) {
+  private String toModuleId(String mvnId) {
+    String[] strings = mvnId.split(":");
+    return strings[0] + ":" + strings[1] + ":" + strings[2];
+  }
+
+  private String toLabel(String id) {
+    if (components.contains(id)) {
+      return id;
+    }
     String[] strings = id.split(":");
-    return strings[0] + ":" + strings[1];
+    return strings[1];
   }
 
   private boolean isRelevant(String moduleId) {
@@ -133,14 +141,19 @@ public class DepsToGraph {
   }
 
   private String getComponent(String module) {
+    if (components.contains(module)) {
+      return module;
+    }
+
     for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
       if (entry.getValue().matcher(module).matches()) {
         return entry.getKey();
       }
     }
-    int index = module.indexOf(':');
-    if (index != -1) {
-      String pureName = module.substring(index + 1);
+
+    String[] strings = module.split(":");
+    if (strings.length == 3) {
+      String pureName = strings[1];
       for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
         if (entry.getValue().matcher(pureName).matches()) {
           return entry.getKey();
@@ -156,25 +169,33 @@ public class DepsToGraph {
       if (modules.contains(module)) {
         String component = getComponent(module);
         if (component != null) {
-          Set<String> collapsibleNodes = new HashSet<>();
-          List<String> path = new ArrayList<>();
-          findCollapsibleComponents(module, component, collapsibleNodes, new HashSet<String>(), path);
-
-          merge(collapsibleNodes, component);
+          collapseNode(module, component);
         }
       }
     }
+
+    for (String component : components) {
+      collapseNode(component, component);
+    }
+  }
+
+  private void collapseNode(String module, String component) {
+    Set<String> collapsibleNodes = new HashSet<>();
+    List<String> path = new ArrayList<>();
+    findCollapsibleComponents(module, component, collapsibleNodes, new HashSet<String>(), path);
+
+    merge(collapsibleNodes, component);
   }
 
   private void findCollapsibleComponents(String current, String component, Set<String> collapsibleNodes, HashSet<String> visited, List<String> path) {
+    path.add(current);
+
+    String currentComponent = getComponent(current);
+    if (component.equals(currentComponent) || component.equals(current)) {
+      collapsibleNodes.addAll(path);
+    }
+
     if (visited.add(current)) {
-      path.add(current);
-
-      String currentComponent = getComponent(current);
-      if (component.equals(currentComponent) || component.equals(current)) {
-        collapsibleNodes.addAll(path);
-      }
-
       for (String node : new ArrayList<>(deps.get(current))) {
         findCollapsibleComponents(node, component, collapsibleNodes, visited, path);
       }
@@ -193,9 +214,9 @@ public class DepsToGraph {
                   component));
         }
       }
-
-      path.remove(path.size() - 1);
     }
+
+    path.remove(path.size() - 1);
   }
 
   private void merge(Set<String> oldNodes, String component) {
@@ -258,7 +279,7 @@ public class DepsToGraph {
     writer.println("<key for=\"node\" id=\"d6\" yfiles.type=\"nodegraphics\"/>");
 
     for (String nodeId : modules) {
-      String label = makeLabel(nodeId);
+      String label = toLabel(nodeId);
       String color = components.contains(nodeId) ? "88ff88" : "ffffff";
 
       writer.println("    <node id=\"" + nodeId + "\">");
@@ -275,10 +296,5 @@ public class DepsToGraph {
       writer.println("    <edge source=\"" + entry.getKey() + "\" target=\"" + entry.getValue() + "\"/>");
     }
     writer.println("</graphml>");
-  }
-
-  private String makeLabel(String id) {
-    // Last name component. If no separator is found, return the entire id.
-    return id.substring(id.lastIndexOf(':') + 1);
   }
 }
