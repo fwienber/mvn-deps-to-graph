@@ -8,7 +8,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -17,10 +16,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -28,13 +25,23 @@ public class DepsToGraph {
 
   private Multimap<String, String> deps;
   private Multimap<String, String> inverseDeps;
-  private Map<String, Pattern> componentPatterns;
+  private List<Mapping> mappings;
   private Set<String> modules;
   private Map<String,String> modulesToComponents;
   private Multimap<String, String> reachableComponents;
   private Multimap<String, String> dependingComponents;
   private Multimap<String, String> componentsToAllModules;
   private Set<String> components;
+
+  public static class Mapping {
+    final String component;
+    final Pattern pattern;
+
+    public Mapping(String component, Pattern pattern) {
+      this.component = component;
+      this.pattern = pattern;
+    }
+  }
 
   public static void main(String[] args) throws IOException {
     if (args.length != 3) {
@@ -74,7 +81,8 @@ public class DepsToGraph {
 
   private String toModuleId(String mvnId) {
     String[] strings = mvnId.split(":");
-    return strings[0] + ":" + strings[1] + ":" + strings[2];
+    return strings[0] + ":" + strings[1];
+    //return strings[0] + ":" + strings[1] + ":" + strings[2];
   }
 
   private String toLabel(String id) {
@@ -135,40 +143,41 @@ public class DepsToGraph {
   }
 
   private void analyzeComponentFile(File file) throws IOException {
-    componentPatterns = new LinkedHashMap<>();
+    mappings = new ArrayList<>();
+    components = new HashSet<>();
 
-    Properties properties = new Properties();
-    try (InputStream stream = new FileInputStream(file)) {
-      properties.load(stream);
-    }
-    for (Map.Entry<Object, Object> entry : properties.entrySet()) {
-      componentPatterns.put((String)entry.getKey(), Pattern.compile(((String)entry.getValue()).trim()));
-    }
-
-    components = new HashSet<>(componentPatterns.keySet());
-  }
-
-  private String getComponent(String module) {
-    if (components.contains(module)) {
-      return module;
-    }
-
-    for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
-      if (entry.getValue().matcher(module).matches()) {
-        return entry.getKey();
-      }
-    }
-
-    String[] strings = module.split(":");
-    if (strings.length == 3) {
-      String pureName = strings[1];
-      for (Map.Entry<String, Pattern> entry : componentPatterns.entrySet()) {
-        if (entry.getValue().matcher(pureName).matches()) {
-          return entry.getKey();
+    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
+      while (reader.ready()) {
+        String line = reader.readLine();
+        int index = line.indexOf('=');
+        if (index != -1) {
+          String component = line.substring(0, index);
+          mappings.add(new Mapping(component, Pattern.compile(line.substring(index + 1))));
+          components.add(component);
         }
       }
     }
-    return null;
+  }
+
+  private String getComponent(String module) {
+    String result = module;
+
+    for (Mapping mapping : mappings) {
+      if (mapping.pattern.matcher(result).matches()) {
+        result = mapping.component;
+        continue;
+      }
+
+      String[] strings = result.split(":");
+      if (strings.length >= 2) {
+        String pureName = strings[1];
+        if (mapping.pattern.matcher(pureName).matches()) {
+          result = mapping.component;
+        }
+      }
+    }
+
+    return result.equals(module) ? null : result;
   }
 
   private void computeModulesToComponents() {
@@ -247,7 +256,7 @@ public class DepsToGraph {
       }
     }
 
-    for (String component : componentsToAllModules.keys()) {
+    for (String component : componentsToAllModules.keySet()) {
       merge(componentsToAllModules.get(component), component);
     }
   }
@@ -321,11 +330,11 @@ public class DepsToGraph {
   }
 
   private void removeTransitiveDependencies(String current, String root, int depth, Set<String> visited) {
+    if (depth > 1) {
+      deps.remove(root, current);
+      inverseDeps.remove(current, root);
+    }
     if (visited.add(current)) {
-      if (depth > 1) {
-        deps.remove(root, current);
-        inverseDeps.remove(current, root);
-      }
       for (String node : new ArrayList<>(deps.get(current))) {
         removeTransitiveDependencies(node, root, depth + 1, visited);
       }
