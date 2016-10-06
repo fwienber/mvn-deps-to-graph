@@ -152,11 +152,13 @@ public class DepsToGraph {
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
       while (reader.ready()) {
         String line = reader.readLine();
-        int index = line.indexOf('=');
-        if (index != -1) {
-          String component = line.substring(0, index);
-          mappings.add(new Mapping(component, Pattern.compile(line.substring(index + 1))));
-          components.add(component);
+        if (!line.startsWith("#")) {
+          int index = line.indexOf('=');
+          if (index != -1) {
+            String component = line.substring(0, index);
+            mappings.add(new Mapping(component, Pattern.compile(line.substring(index + 1))));
+            components.add(component);
+          }
         }
       }
     }
