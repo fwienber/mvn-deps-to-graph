@@ -12,6 +12,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -24,6 +25,7 @@ import java.util.regex.Pattern;
 public class DepsToGraph {
 
   private Multimap<String, String> deps;
+  private Multimap<String, String> depsBeforeCollapse;
   private Multimap<String, String> inverseDeps;
   private List<Mapping> mappings;
   private Set<String> modules;
@@ -62,6 +64,7 @@ public class DepsToGraph {
     computeReachableComponents();
     computeDependingComponents();
     collapseComponents();
+    detectCycles();
     removeTransitiveDependencies();
 
     File outFile = new File(outFileName);
@@ -240,6 +243,8 @@ public class DepsToGraph {
   }
 
   private void collapseComponents() {
+    depsBeforeCollapse = HashMultimap.create(deps);
+
     componentsToAllModules = HashMultimap.create();
     for (String module : modules) {
       Set<String> moduleComponents = new HashSet<>(reachableComponents.get(module));
@@ -261,22 +266,31 @@ public class DepsToGraph {
     }
   }
 
-  private List<String> findPath(String module, String component, Multimap<String, String> deps) {
+  /**
+   * Find a path from the given module to a module of the given component following the
+   * successor relation. Return an empty list if no path could be found.
+   *
+   * @param module the module
+   * @param component the component
+   * @param successorRelation the successor relation.
+   * @return the path
+   */
+  private List<String> findPath(String module, String component, Multimap<String, String> successorRelation) {
     Set<String> visited = new HashSet<>();
     List<String> path = new ArrayList<>();
-    findPath(module, component, deps, visited, path);
+    findPath(module, component, successorRelation, visited, path);
     return path;
   }
 
-  private boolean findPath(String current, String component, Multimap<String, String> deps, Set<String> visited, List<String> path) {
+  private boolean findPath(String current, String component, Multimap<String, String> successorRelation, Set<String> visited, List<String> path) {
     if (visited.add(current)) {
       path.add(current);
       if (component.equals(modulesToComponents.get(current))) {
         return true;
       }
 
-      for (String node : deps.get(current)) {
-        if (findPath(node, component, deps, visited, path)) {
+      for (String node : successorRelation.get(current)) {
+        if (findPath(node, component, successorRelation, visited, path)) {
           return true;
         }
       }
@@ -321,6 +335,62 @@ public class DepsToGraph {
 
     modules.removeAll(oldNodes);
     modules.add(component);
+  }
+
+  private void detectCycles() {
+    Set<String> visited = new HashSet<>();
+    for (String node : deps.keySet()) {
+      List<String> path = new ArrayList<>();
+      if (detectCycles(path, node, visited)) {
+        return;
+      }
+    }
+  }
+
+  private boolean detectCycles(List<String> path, String node, Set<String> visited) {
+    if (path.contains(node)) {
+      int start = path.indexOf(node);
+      List<String> cycle = new ArrayList<>(path.subList(start, path.size()));
+      cycle.add(node);
+      System.out.println("Cycle in component structure detected: " + cycle);
+      for (int i = 1; i < cycle.size(); i++) {
+        String from = cycle.get(i - 1);
+        String to = cycle.get(i);
+        System.out.println("Possible path from " + from + " to " + to + ": " + getPathFromTo(from, to));
+      }
+      return true;
+    }
+    if (visited.add(node)) {
+      path.add(node);
+      Collection<String> successors = deps.get(node);
+      for (String successor : successors) {
+        if (detectCycles(path, successor, visited)) {
+          return true;
+        }
+      }
+      path.remove(path.size() - 1);
+    }
+    return false;
+  }
+
+  private List<String> getPathFromTo(String from, String to) {
+    if (components.contains(from)) {
+      for (String fromModule : componentsToAllModules.get(from)) {
+        List<String> path = getPathFromTo(fromModule, to);
+        if (path != null) {
+          return path;
+        }
+      }
+      return null;
+    } else if (components.contains(to)) {
+      List<String> path = findPath(from, to, depsBeforeCollapse);
+      if (!path.isEmpty()) {
+        return path;
+      }
+      return null;
+    } else {
+      return Arrays.asList(from, to);
+    }
   }
 
   private void removeTransitiveDependencies() {
