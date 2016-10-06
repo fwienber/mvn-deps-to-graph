@@ -47,11 +47,23 @@ public class DepsToGraph {
 
   public static void main(String[] args) throws IOException {
     if (args.length != 3) {
-      System.out.println("Usage: java -jar ... <DEPSFILE> <COMPFILE> <OUTFILE>");
+      System.out.println("Usage: java -jar ... <MAVENFILE> <CONFIGFILE> <OUTFILE>");
+      System.out.println("  MAVENFILE: the output from 'mvn dependency:tree'");
+      System.out.println("  CONFIGFILE: the config file grouping modules to components");
+      System.out.println("  OUTFILE: the target *.graphml file");
       System.out.println();
-      System.out.println("DEPSFILE: the output from 'mvn dependency:tree'");
-      System.out.println("COMPFILE: a property file mapping module names to component names");
-      System.out.println("OUTFILE: the target *.graphml file");
+      System.out.println("Description:");
+      System.out.println("  This program reads module dependencies from the given Maven file.");
+      System.out.println("  Each module name is then run through a list of mappings defined");
+      System.out.println("  in a configuration file. The configuration file contains lines");
+      System.out.println("  in the following form:");
+      System.out.println("    <COMPONENT_NAME>=<REGULAR_EXPRESSION>");
+      System.out.println("  When a name matches the regular expression, it is replaced");
+      System.out.println("  with the component name on the left, which is then matched");
+      System.out.println("  against the remaining rules. Multiple lines may define the same");
+      System.out.println("  component. Mappings near the start of the list take precedence.");
+      System.out.println("  Mappings near the bottom of the list can be used to group");
+      System.out.println("  components into larger components.");
     } else {
       new DepsToGraph().execute(args[0], args[1], args[2]);
     }
