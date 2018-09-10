@@ -29,7 +29,7 @@ public class DepsToGraph {
   private Multimap<String, String> inverseDeps;
   private List<Mapping> mappings;
   private Set<String> modules;
-  private Map<String,String> modulesToComponents;
+  private Map<String,String> modulesToComponents = new HashMap<>();
   private Multimap<String, String> reachableComponents;
   private Multimap<String, String> dependingComponents;
   private Multimap<String, String> componentsToAllModules;
@@ -70,9 +70,8 @@ public class DepsToGraph {
   }
 
   private void execute(String depsFileName, String compFileName, String outFileName) throws IOException {
-    analyzeDepsFile(new File(depsFileName));
     analyzeComponentFile(new File(compFileName));
-    computeModulesToComponents();
+    analyzeDepsFile(new File(depsFileName));
     computeReachableComponents();
     computeDependingComponents();
     collapseComponents();
@@ -108,8 +107,8 @@ public class DepsToGraph {
     return strings[1];
   }
 
-  private boolean isRelevant(String moduleId) {
-    return moduleId.startsWith("com.coremedia.");
+  private boolean isRelevantDependency(String moduleId) {
+    return moduleId.startsWith("com.coremedia.") && isRelevantModule(moduleId);
   }
 
   private void analyzeDepsFile(File file) throws IOException {
@@ -122,12 +121,15 @@ public class DepsToGraph {
         String line = reader.readLine();
         if (isHeaderLine(line)) {
           module = moduleColumn(reader.readLine(), 1);
+          if (!isRelevantModule(module)) {
+            module = null;
+          }
           continue;
         }
 
         if (module != null && isDependencyLine(line)) {
           String dependency = moduleColumn(line, 2);
-          if (isRelevant(dependency)) {
+          if (isRelevantDependency(dependency)) {
             deps.put(module, dependency);
             inverseDeps.put(dependency, module);
           }
@@ -145,6 +147,10 @@ public class DepsToGraph {
     modules.addAll(deps.values());
   }
 
+  private boolean isRelevantModule(String module) {
+    return !"IGNORE".equals(getComponent(module));
+  }
+
   private boolean isNestedDependencyLine(String line) {
     return line.startsWith("[INFO] | ");
   }
@@ -154,7 +160,7 @@ public class DepsToGraph {
   }
 
   private boolean isDependencyLine(String line) {
-    return line.startsWith("[INFO] +- ") || line.startsWith("[INFO] \\- ");
+    return (line.startsWith("[INFO] +- ") || line.startsWith("[INFO] \\- ")) && !line.endsWith(":test");
   }
 
   private void analyzeComponentFile(File file) throws IOException {
@@ -177,6 +183,15 @@ public class DepsToGraph {
   }
 
   private String getComponent(String module) {
+    if (modulesToComponents.containsKey(module)) {
+      return modulesToComponents.get(module);
+    }
+    String component = computeComponent(module);
+    modulesToComponents.put(module, component);
+    return component;
+  }
+
+  private String computeComponent(String module) {
     String result = module;
 
     for (Mapping mapping : mappings) {
@@ -197,17 +212,6 @@ public class DepsToGraph {
     return result.equals(module) ? null : result;
   }
 
-  private void computeModulesToComponents() {
-    modulesToComponents = new HashMap<>();
-
-    for (String module : modules) {
-      String component = getComponent(module);
-      if (component != null) {
-        modulesToComponents.put(module, component);
-      }
-    }
-  }
-
   private void computeReachableComponents() {
     reachableComponents = HashMultimap.create();
 
@@ -220,8 +224,9 @@ public class DepsToGraph {
   private void computeReachableComponents(String current, HashSet<String> visited) {
     if (visited.add(current)) {
       Set<String> joinedReachableComponents = new HashSet<>();
-      if (modulesToComponents.containsKey(current)) {
-        joinedReachableComponents.add(modulesToComponents.get(current));
+      String component = getComponent(current);
+      if (component != null) {
+        joinedReachableComponents.add(component);
       }
 
       for (String node : new ArrayList<>(deps.get(current))) {
@@ -244,8 +249,9 @@ public class DepsToGraph {
   private void computeDependingComponents(String current, HashSet<String> visited) {
     if (visited.add(current)) {
       Collection<String> joinedDependingComponents = new HashSet<>();
-      if (modulesToComponents.containsKey(current)) {
-        joinedDependingComponents.add(modulesToComponents.get(current));
+      String component = getComponent(current);
+      if (component != null) {
+        joinedDependingComponents.add(component);
       }
 
       for (String node : new ArrayList<>(inverseDeps.get(current))) {
@@ -267,8 +273,8 @@ public class DepsToGraph {
       if (moduleComponents.size() > 1) {
         System.out.println(String.format("Module %s is supposed to be member of multiple components: %s", module, moduleComponents));
         for (String component : moduleComponents) {
-          System.out.println(String.format("  Path to component %s is: %s", component, findPath(module, component, deps)));
-          System.out.println(String.format("  Path from component %s is: %s", component, findPath(module, component, inverseDeps)));
+          System.out.println(String.format("  Path to component %s is: %s", component, String.join(" -> ", findPath(module, component, deps))));
+          System.out.println(String.format("  Path from component %s is: %s", component, String.join(" <- ", findPath(module, component, inverseDeps))));
         }
       } else if (moduleComponents.size() == 1) {
         componentsToAllModules.put(moduleComponents.iterator().next(), module);
@@ -299,7 +305,7 @@ public class DepsToGraph {
   private boolean findPath(String current, String component, Multimap<String, String> successorRelation, Set<String> visited, List<String> path) {
     if (visited.add(current)) {
       path.add(current);
-      if (component.equals(modulesToComponents.get(current))) {
+      if (component.equals(getComponent(current))) {
         return true;
       }
 
