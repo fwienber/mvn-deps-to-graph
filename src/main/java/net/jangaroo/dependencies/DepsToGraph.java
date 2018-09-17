@@ -435,6 +435,7 @@ public class DepsToGraph {
     writer.println("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     writer.println("<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\" xmlns:java=\"http://www.yworks.com/xml/yfiles-common/1.0/java\" xmlns:sys=\"http://www.yworks.com/xml/yfiles-common/markup/primitives/2.0\" xmlns:x=\"http://www.yworks.com/xml/yfiles-common/markup/2.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:y=\"http://www.yworks.com/xml/graphml\" xmlns:yed=\"http://www.yworks.com/xml/yed/3\" xsi:schemaLocation=\"http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd\">");
     writer.println("<key for=\"node\" id=\"d6\" yfiles.type=\"nodegraphics\"/>");
+    writer.println("<graph edgedefault=\"directed\">");
 
     for (String nodeId : modules) {
       writeNode(writer, nodeId);
@@ -444,6 +445,7 @@ public class DepsToGraph {
       writeEdge(writer, entry.getKey(), entry.getValue());
     }
 
+    writer.println("</graph>");
     writer.println("</graphml>");
   }
 
